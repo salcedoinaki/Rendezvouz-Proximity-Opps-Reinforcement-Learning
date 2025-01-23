@@ -28,6 +28,8 @@ class OrbitalRendezvousEnv(gym.Env):
         # Calculate distance and reward
         distance = np.sqrt(x**2 + y**2)
         reward = -distance
+        if distance < 1.0:  # Bonus for being within a close range
+            reward += 1.0
 
         # Define termination criteria
         terminated = distance < 0.1  # Terminate if the agent is close enough
