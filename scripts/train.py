@@ -6,7 +6,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from environment.orbital_rendezvous_env import OrbitalRendezvousEnv
 
-def train_rl_model(total_timesteps=50000, save_path='models/orbital_rendezvous_model'):
+def train_rl_model(total_timesteps=200000, save_path='models/orbital_rendezvous_model'):
     """Train a PPO model on the Orbital Rendezvous Environment."""
     vec_env = make_vec_env(lambda: OrbitalRendezvousEnv(), n_envs=4)
     model = PPO(
