@@ -1,8 +1,9 @@
 from .base_env import BaseEnvironment
 from gymnasium import spaces
-from .reward_functions import combined_reward
+from .reward_functions import RewardFormulation
 from .dynamics import DynamicsDiscrete
 import numpy as np
+
 
 class RPOEnvironment(BaseEnvironment):
     def __init__(self):
@@ -18,6 +19,10 @@ class RPOEnvironment(BaseEnvironment):
         self.target_position = np.zeros(3)
         self.state = None  # Placeholder for the current state
         self.fuel = 100.0
+
+        # Pass required arguments to RewardFormulation
+        self.reward_function = RewardFormulation(chaser=self)
+        
 
     def step(self, action):
         """
@@ -35,18 +40,17 @@ class RPOEnvironment(BaseEnvironment):
         # Update the state using the dynamics model
         next_state = self.dynamics.step(self.state, thrust, self.mass)
 
-        # Extract position and velocity for reward calculation
-        chaser_position = next_state[:3]
-        chaser_velocity = next_state[3:]
+        # Update the internal state for the reward function
+        self.reward_function.position = next_state[:3]
+        self.reward_function.velocity = next_state[3:]
+        self.reward_function.thrust = thrust
 
-        # Calculate the reward
-        reward = combined_reward(chaser_position, self.target_position, chaser_velocity, thrust)
+        # Compute the reward using the reward function
+        reward, terminated = self.reward_function.compute_reward()
 
-        # Check termination conditions
-        distance_to_target = np.linalg.norm(self.target_position - chaser_position)
-        terminated = distance_to_target < 0.1  # Success if very close to the target
-        truncated = self.fuel <= 0  # End if fuel runs out
-        
+        # Check if fuel has run out
+        truncated = self.fuel <= 0
+
         # Update fuel based on thrust usage
         self.fuel -= np.linalg.norm(thrust)
 

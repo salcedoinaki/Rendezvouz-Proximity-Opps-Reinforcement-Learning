@@ -1,91 +1,106 @@
 import numpy as np
 
-def proximity_reward(chaser_position, target_position):
-    """
-    Encourages the chaser to get closer to the target.
-    
-    Args:
-        chaser_position (np.ndarray): Position of the chaser (3,).
-        target_position (np.ndarray): Position of the target (3,).
+class RewardConditions:
+    def __init__(self, chaser):
+        self.chaser = chaser
+        self.time_limit = 2500
 
-    Returns:
-        float: Negative distance to the target (closer is better).
-    """
-    distance = np.linalg.norm(chaser_position - target_position)
-    return -distance  # Closer is better
+    def inbounds(self):
+        return self.get_current_distance() < 1500.0
 
-def velocity_alignment_reward(chaser_velocity, relative_position):
-    """
-    Rewards the chaser for aligning velocity with the target direction.
+    def get_current_distance(self):
+        target_point = self.chaser.docking_point
+        current_position = self.chaser.state[:3]
+        return np.linalg.norm(target_point - current_position)
 
-    Args:
-        chaser_velocity (np.ndarray): Velocity of the chaser (3,).
-        relative_position (np.ndarray): Position of the target relative to the chaser (3,).
+    def get_previous_distance(self):
+        if len(self.chaser.state_trace) < 2:
+            return self.get_current_distance()
+        previous_position = self.chaser.state_trace[-2][:3]
+        target_point = self.chaser.docking_point
+        return np.linalg.norm(target_point - previous_position)
 
-    Returns:
-        float: Alignment score (higher is better).
-    """
-    norm_relative_position = np.linalg.norm(relative_position)
-    if norm_relative_position > 0:
-        unit_relative_position = relative_position / norm_relative_position
-        alignment = np.dot(chaser_velocity, unit_relative_position)
-    else:
-        alignment = 0.0  # No alignment if already at the target
-    return alignment
+    def is_closer(self):
+        return self.get_current_distance() < self.get_previous_distance()
 
-def fuel_penalty(thrust):
-    """
-    Penalizes the agent for using excessive thrust.
+    def in_los(self):
+        dock_pos = np.array(self.chaser.docking_point)
+        theta = self.chaser.theta_cone
 
-    Args:
-        thrust (np.ndarray): Thrust applied by the chaser (3,).
+        relative_position = self.chaser.state[:3] - dock_pos
+        los_vector = np.array([0.0, 800, 0.0])
 
-    Returns:
-        float: Negative fuel cost proportional to thrust magnitude.
-    """
-    fuel_cost = np.linalg.norm(thrust)
-    return -fuel_cost
+        cos_condition = np.cos(theta / 2.0)
+        dot_product = np.dot(relative_position, los_vector) / (
+            np.linalg.norm(relative_position) * np.linalg.norm(los_vector)
+        )
 
-def safety_penalty(chaser_velocity, max_velocity=10.0):
-    """
-    Penalizes the agent for exceeding safe velocity limits.
+        return 0.0 <= relative_position[1] <= 800.0 and dot_product >= cos_condition
 
-    Args:
-        chaser_velocity (np.ndarray): Velocity of the chaser (3,).
-        max_velocity (float): Maximum allowed velocity magnitude.
+    def is_docked(self):
+        position_error = self.chaser.state[:3] - self.chaser.docking_point
+        velocity_error = self.chaser.state[3:]
+        return self.in_los() and np.linalg.norm(position_error) < 0.1 and np.linalg.norm(velocity_error) < 0.02
 
-    Returns:
-        float: Fixed penalty if velocity exceeds the limit.
-    """
-    velocity_magnitude = np.linalg.norm(chaser_velocity)
-    return -10.0 if velocity_magnitude > max_velocity else 0.0
+    def l2norm_state(self):
+        position_error = self.chaser.state[:3] - self.chaser.docking_point
+        velocity_error = self.chaser.state[3:]
+        return np.linalg.norm(position_error) + 5.0 * np.linalg.norm(velocity_error)
 
-def combined_reward(chaser_position, target_position, chaser_velocity, thrust):
-    """
-    Combines all reward components to calculate the total reward.
+class RewardFormulation(RewardConditions):
+    def __init__(self, chaser):
+        super().__init__(chaser)
+        self.reset_rewards()
 
-    Args:
-        chaser_position (np.ndarray): Position of the chaser (3,).
-        target_position (np.ndarray): Position of the target (3,).
-        chaser_velocity (np.ndarray): Velocity of the chaser (3,).
-        thrust (np.ndarray): Thrust applied by the chaser (3,).
+    def reset_rewards(self):
+        self.time_in_los = 0
+        self.total_penalty = 0
+        self.total_reward = 0
+        self.docked_reward = 0
 
-    Returns:
-        float: Total reward combining all components.
-    """
-    relative_position = target_position - chaser_position
+    def terminal_conditions(self):
+        if not self.inbounds():
+            return -100, True
+        if self.chaser.current_step >= self.time_limit:
+            return -100, True
+        return 0, False
 
-    # Calculate individual rewards
-    proximity = proximity_reward(chaser_position, target_position)
-    alignment = velocity_alignment_reward(chaser_velocity, relative_position)
-    fuel_cost = fuel_penalty(thrust)
-    safety = safety_penalty(chaser_velocity)
+    def calculate_penalty(self):
+        penalty = -self.l2norm_state()
+        if not self.in_los():
+            penalty -= 50.0
+        self.total_penalty += penalty
+        return penalty
 
-    # Combine rewards with weights (tune these weights as needed)
-    reward = (
-        1.0 * proximity +    # Encourage getting closer to the target
-        0.5 * alignment +    # Encourage velocity alignment
-        0.1 * fuel_cost +    # Penalize excessive thrust
-        1.0 * safety         # Penalize unsafe speeds
-    )
-    return reward
+    def calculate_reward(self):
+        reward = 0
+        if self.in_los():
+            self.time_in_los += 1
+            distance = self.get_current_distance()
+            reward += max(0, (800 - distance) ** 2) * 1e-6
+        self.total_reward += reward
+        return reward
+
+    def docking_reward(self):
+        if self.is_docked():
+            reward = 1000
+            self.docked_reward += reward
+            return reward, True
+        return 0, False
+
+    def compute_reward(self):
+        # Check terminal conditions
+        terminal_reward, done = self.terminal_conditions()
+        if done:
+            return terminal_reward, done
+
+        # Check docking condition
+        docking_reward, docked = self.docking_reward()
+        if docked:
+            return docking_reward, True
+
+        # Compute continuous reward and penalty
+        penalty = self.calculate_penalty()
+        reward = self.calculate_reward()
+
+        return reward + penalty, False
