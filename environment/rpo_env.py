@@ -1,5 +1,7 @@
 from .base_env import BaseEnvironment
 from gymnasium import spaces
+from .reward_functions import combined_reward
+from .dynamics import DynamicsDiscrete
 import numpy as np
 
 class RPOEnvironment(BaseEnvironment):
@@ -10,40 +12,80 @@ class RPOEnvironment(BaseEnvironment):
 
         super(RPOEnvironment, self).__init__(observation_space, action_space)
 
-        # Initialize specific environment parameters
+        # Initialize dynamics and specific environment parameters
+        self.dynamics = DynamicsDiscrete()
+        self.mass = 500.0  # Chaser mass in kilograms
         self.target_position = np.zeros(3)
-        self.chaser_position = np.zeros(3)
-        self.chaser_velocity = np.zeros(3)
+        self.state = None  # Placeholder for the current state
         self.fuel = 100.0
 
     def step(self, action):
-        # Update the chaser's state based on the action
-        thrust = action
-        self.chaser_velocity += thrust
-        self.chaser_position += self.chaser_velocity
+        """
+        Executes a single time step in the environment.
+
+        Args:
+            action (np.ndarray): The action taken by the agent.
+
+        Returns:
+            Tuple: (next_state, reward, terminated, truncated, info)
+        """
+        # Ensure the action is within bounds
+        thrust = np.clip(action, self.action_space.low, self.action_space.high)
+
+        # Update the state using the dynamics model
+        next_state = self.dynamics.step(self.state, thrust, self.mass)
+
+        # Extract position and velocity for reward calculation
+        chaser_position = next_state[:3]
+        chaser_velocity = next_state[3:]
 
         # Calculate the reward
-        distance_to_target = np.linalg.norm(self.target_position - self.chaser_position)
-        reward = -distance_to_target
+        reward = combined_reward(chaser_position, self.target_position, chaser_velocity, thrust)
 
-        # Check if the task is terminated (reached the target) or truncated (fuel depleted)
-        terminated = distance_to_target < 0.1
-        truncated = self.fuel <= 0
-        self.fuel -= 1  # Decrement fuel
+        # Check termination conditions
+        distance_to_target = np.linalg.norm(self.target_position - chaser_position)
+        terminated = distance_to_target < 0.1  # Success if very close to the target
+        truncated = self.fuel <= 0  # End if fuel runs out
+        
+        # Update fuel based on thrust usage
+        self.fuel -= np.linalg.norm(thrust)
+
+        # Update the environment's state
+        self.state = next_state
 
         # Return the new state, reward, termination flags, and additional info
-        self.state = np.concatenate([self.chaser_position, self.chaser_velocity])
         return self.state, reward, terminated, truncated, {}
 
     def reset(self, seed=None, options=None):
-        # Reset the state of the environment
-        if seed is not None:
-            np.random.seed(seed)  # Set the random seed for reproducibility
+        """
+        Resets the environment to its initial state.
 
-        self.chaser_position = np.random.uniform(-1, 1, size=(3,))
-        self.chaser_velocity = np.zeros(3)
-        self.fuel = 100.0
-        self.state = np.concatenate([self.chaser_position, self.chaser_velocity])
+        Args:
+            seed (int, optional): Random seed for reproducibility.
+
+        Returns:
+            Tuple: (initial_state, info)
+        """
+        if seed is not None:
+            np.random.seed(seed)  # Set the random seed
+
+        # Randomly initialize the chaser's position and velocity
+        chaser_position = np.random.uniform(-1, 1, size=(3,))
+        chaser_velocity = np.zeros(3)
+        self.state = np.concatenate([chaser_position, chaser_velocity])
+        self.fuel = 100.0  # Reset fuel
 
         # Gymnasium requires reset() to return (state, info)
         return self.state, {}
+
+    def render(self, mode="human"):
+        """
+        Renders the environment (optional).
+        """
+        print(f"Chaser Position: {self.state[:3]}, Chaser Velocity: {self.state[3:]}, Fuel: {self.fuel}")
+
+    def close(self):
+        """
+        Cleans up resources (optional).
+        """
+        pass
