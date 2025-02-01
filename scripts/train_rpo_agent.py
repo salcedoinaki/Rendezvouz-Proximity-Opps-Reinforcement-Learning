@@ -5,27 +5,53 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import gymnasium as gym
 from sb3_contrib import RecurrentPPO
-#from stable_baselines3.common.policies import MlpPolicy
+from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
 from environment.rpo_env import RPOEnvironment
+
+def make_env():
+    """ Utility function to create an environment instance for parallelization. """
+    return RPOEnvironment()
 
 def train_agent():
     """
-    Trains the RL agent using the RPO environment and the Recurrent PPO algorithm with LSTM.
+    Fast RL Training for refinement before deep model training.
     """
-    # Create the RPO environment
-    env = RPOEnvironment()
+    # Create and normalize vectorized environments (parallelization for speed-up)
+    num_envs = 2  # Reduce to 2 environments for faster training
+    env = SubprocVecEnv([make_env for _ in range(num_envs)])
+    env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0)
 
-    # Instantiate the Recurrent PPO model with LSTM policy
-    model = RecurrentPPO("MlpLstmPolicy", env, verbose=1, tensorboard_log="./ppo_rpo_tensorboard/")
+    # Quick Refinement - Train MLP First
+    model_mlp = PPO(
+        "MlpPolicy", env,
+        verbose=1,
+        tensorboard_log="./ppo_rpo_tensorboard/",
+        learning_rate=1e-4,  # Reduced LR for stability
+        n_steps=256,  # Shorter sequences for fast learning
+        batch_size=128,  # Larger batch for quicker updates
+        device="cuda"  # Enable GPU acceleration
+    )
 
-    # Train the agent
-    model.learn(total_timesteps=100000)
+    model_mlp.learn(total_timesteps=20000)  # Reduce timesteps for quick refinement
+    model_mlp.save("ppo_rpo_refined")  # Save refined model
+    print("Refined model saved as ppo_rpo_refined.zip")
 
-    # Save the model
-    model.save("ppo_rpo_lstm_agent")
-    print("Model saved as ppo_rpo_lstm_agent.zip")
+    # Train LSTM Model Separately from Scratch
+    model_lstm = RecurrentPPO(
+        "MlpLstmPolicy", env,
+        verbose=1,
+        tensorboard_log="./ppo_rpo_tensorboard/",
+        learning_rate=1e-4,
+        n_steps=128,  # Shorter sequences for faster updates
+        batch_size=128,
+        device="cuda"
+    )
+    model_lstm.learn(total_timesteps=20000)  # Reduce timesteps for faster LSTM training
+    model_lstm.save("ppo_rpo_lstm_agent")
+    print("Deep model saved as ppo_rpo_lstm_agent.zip")
 
-    # Optionally, close the environment
+    # Close the environment
     env.close()
 
 if __name__ == "__main__":
