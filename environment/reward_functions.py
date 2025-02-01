@@ -4,6 +4,9 @@ class RewardConditions:
     def __init__(self, chaser):
         self.chaser = chaser
         self.time_limit = 2500
+        self.chaser.docking_point = np.array([0.0, 800.0, 0.0])
+        self.chaser.current_step = 0
+        self.chaser.theta_cone = 60
 
     def inbounds(self):
         return self.get_current_distance() < 1500.0
