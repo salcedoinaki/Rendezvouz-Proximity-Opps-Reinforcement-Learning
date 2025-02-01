@@ -29,15 +29,12 @@ class RewardConditions:
     def in_los(self):
         dock_pos = np.array(self.chaser.docking_point)
         theta = self.chaser.theta_cone
-
         relative_position = self.chaser.state[:3] - dock_pos
         los_vector = np.array([0.0, 800, 0.0])
-
         cos_condition = np.cos(theta / 2.0)
         dot_product = np.dot(relative_position, los_vector) / (
             np.linalg.norm(relative_position) * np.linalg.norm(los_vector)
         )
-
         return 0.0 <= relative_position[1] <= 800.0 and dot_product >= cos_condition
 
     def is_docked(self):
@@ -63,15 +60,15 @@ class RewardFormulation(RewardConditions):
 
     def terminal_conditions(self):
         if not self.inbounds():
-            return -100, True
+            return -10, True  # Reduced from -100 to -10
         if self.chaser.current_step >= self.time_limit:
-            return -100, True
+            return -10, True  # Reduced from -100 to -10
         return 0, False
 
     def calculate_penalty(self):
-        penalty = -self.l2norm_state()
+        penalty = -np.log(1 + self.l2norm_state())  # Log-scaling to prevent extreme penalties
         if not self.in_los():
-            penalty -= 50.0
+            penalty -= 10.0  # Reduced from -50 to -10
         self.total_penalty += penalty
         return penalty
 
@@ -80,13 +77,13 @@ class RewardFormulation(RewardConditions):
         if self.in_los():
             self.time_in_los += 1
             distance = self.get_current_distance()
-            reward += max(0, (800 - distance) ** 2) * 1e-6
+            reward += max(0, (800 - distance) ** 2) * 1e-4  # Increased from 1e-6 to 1e-4
         self.total_reward += reward
         return reward
 
     def docking_reward(self):
         if self.is_docked():
-            reward = 1000
+            reward = 500  # Reduced from 1000 to 500 for better balance
             self.docked_reward += reward
             return reward, True
         return 0, False
@@ -96,14 +93,9 @@ class RewardFormulation(RewardConditions):
         terminal_reward, done = self.terminal_conditions()
         if done:
             return terminal_reward, done
-
         # Check docking condition
         docking_reward, docked = self.docking_reward()
         if docked:
             return docking_reward, True
-
         # Compute continuous reward and penalty
-        penalty = self.calculate_penalty()
-        reward = self.calculate_reward()
-
-        return reward + penalty, False
+        return self.calculate_penalty() + self.calculate_reward(), False
